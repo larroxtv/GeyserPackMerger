@@ -46,20 +46,22 @@ function Pick-Pack {
 $packs = Get-ResourcePacks -Folder $root
 if (-not $packs -or $packs.Count -lt 2) { throw "Need at least two resource packs in $root" }
 
+# Resolve Base
 if ($BasePack) {
     $basePath = Join-Path $root $BasePack
     if (-not (Test-Path $basePath)) { throw "Base pack not found: $basePath" }
     $base = [PSCustomObject]@{ Name = Split-Path $basePath -Leaf; Path = $basePath }
 } else {
-    $base = Pick-Pack -Packs $packs -Label "BASE (keeps most assets)"
+    $base = Pick-Pack -Packs $packs -Label "BASE (keeps original assets)"
 }
 
+# Resolve Overlay
 if ($OverlayPack) {
     $overlayPath = Join-Path $root $OverlayPack
     if (-not (Test-Path $overlayPath)) { throw "Overlay pack not found: $overlayPath" }
     $overlay = [PSCustomObject]@{ Name = Split-Path $overlayPath -Leaf; Path = $overlayPath }
 } else {
-    $overlay = Pick-Pack -Packs $packs -Label "OVERLAY (UI to apply)"
+    $overlay = Pick-Pack -Packs $packs -Label "OVERLAY (assets to merge/override)"
 }
 
 if (-not $Output) {
@@ -74,27 +76,38 @@ if ($outPath -eq $base.Path -or $outPath -eq $overlay.Path) { throw "Output fold
 if (Test-Path $outPath) { Remove-Item $outPath -Recurse -Force }
 Copy-Item $base.Path $outPath -Recurse -Force
 
-$copyPairs = @(
-    @{ Source = Join-Path $overlay.Path "ui"; Dest = Join-Path $outPath "ui" },
-    @{ Source = Join-Path $overlay.Path "textures\guis"; Dest = Join-Path $outPath "textures\guis" },
-    @{ Source = Join-Path $overlay.Path "textures\playtime"; Dest = Join-Path $outPath "textures\playtime" },
-    @{ Source = Join-Path $overlay.Path "Kafal-Settings.json"; Dest = Join-Path $outPath "Kafal-Settings.json" }
-)
-
-foreach ($pair in $copyPairs) {
-    if (Test-Path $pair.Source) {
-        Copy-Item $pair.Source $pair.Dest -Recurse -Force
+Write-Host "Merging overlay pack assets..." -ForegroundColor Yellow
+$overlayItems = Get-ChildItem -Path $overlay.Path -Recurse -Force
+foreach ($item in $overlayItems) {
+    if ($item.Name -eq "manifest.json" -and $item.Directory.FullName -eq $overlay.Path) {
+        continue
+    }
+    
+    $relativePath = $item.FullName.Substring($overlay.Path.Length + 1)
+    $destPath = Join-Path $outPath $relativePath
+    
+    if ($item.PSIsContainer) {
+        if (-not (Test-Path $destPath)) {
+            New-Item -ItemType Directory -Path $destPath -Force | Out-Null
+        }
+    } else {
+        $destDir = Split-Path $destPath
+        if (-not (Test-Path $destDir)) {
+            New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+        }
+        Copy-Item -Path $item.FullName -Destination $destPath -Force
     }
 }
 
 $manifestPath = Join-Path $outPath "manifest.json"
 if (Test-Path $manifestPath) {
     $json = Get-Content $manifestPath -Raw | ConvertFrom-Json
-    $json.header.name = "$($base.Name) + $($overlay.Name) (Merged with GeyserPackMerger by LarroxTv)"
-    $json.header.description = "This Pack was merged by GeyserPackMerger, created by LarroxTv"
+    $json.header.name = "$($base.Name) + $($overlay.Name) (Merged)"
+    $json.header.description = "Base: $($base.Name) with assets merged from: $($overlay.Name)."
     $json.header.uuid = [guid]::NewGuid().ToString()
     if ($json.modules.Count -gt 0) { $json.modules[0].uuid = [guid]::NewGuid().ToString() }
     $json | ConvertTo-Json -Depth 10 | Set-Content $manifestPath -Encoding UTF8
 }
 
 Write-Host "Merged pack created at: $outPath" -ForegroundColor Green
+Write-Host "Total files merged: $(Get-ChildItem $outPath -Recurse -Force | Where-Object { -not $_.PSIsContainer } | Measure-Object | Select-Object -ExpandProperty Count)" -ForegroundColor Green
